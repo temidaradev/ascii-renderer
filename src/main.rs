@@ -3,29 +3,34 @@ use crossterm::{
     style::{Color, Print, ResetColor, SetForegroundColor},
     terminal,
 };
-use image::{GenericImageView, imageops::FilterType};
 use std::env;
 use std::io::{Write, stdout};
 
-const ASCII: &str = "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`'. ";
-
-fn pixel_to_char(r: u8, g: u8, b: u8) -> char {
-    let brightness = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
-    let index = ((brightness / 255.0) * (ASCII.len() - 1) as f32)
-        .clamp(0.0, (ASCII.len() - 1) as f32) as usize;
-    ASCII.chars().nth(index).unwrap()
-}
+mod ascii;
+mod gui;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let image_path = args.get(1).map(String::as_str).unwrap_or("cover.png");
 
-    let img = image::open(image_path).expect("Failed to open image");
-    let (img_w, img_h) = img.dimensions();
+    if args.iter().any(|arg| arg == "--gui") {
+        if let Err(e) = gui::run() {
+            eprintln!("Failed to start GUI: {}", e);
+        }
+        return;
+    }
+
+    let image_path = args
+        .iter()
+        .skip(1)
+        .find(|arg| *arg != "--gui")
+        .map(String::as_str)
+        .unwrap_or("cover.png");
+
+    let img_bytes = std::fs::read(image_path).expect("Failed to read image file");
+    let img = image::load_from_memory(&img_bytes).expect("Failed to open image");
 
     let (term_w, term_h) = terminal::size().expect("Failed to get terminal size");
 
-    let char_aspect = 0.5_f32;
     let max_w = term_w as u32;
     let max_h = (term_h as u32).saturating_sub(1);
 
@@ -33,27 +38,29 @@ fn main() {
         return;
     }
 
-    let h_from_w = (max_w as f32 * (img_h as f32 / img_w as f32) * char_aspect) as u32;
+    let art = ascii::generate_ascii_art(&img, max_w, max_h);
 
-    let (ascii_w, ascii_h) = if h_from_w <= max_h {
-        (max_w, h_from_w)
-    } else {
-        let w_from_h = (max_h as f32 * (img_w as f32 / img_h as f32) / char_aspect) as u32;
-        (w_from_h.min(max_w), max_h)
-    };
-
-    let resized_img = img.resize_exact(ascii_w, ascii_h, FilterType::Lanczos3);
+    if art.width == 0 || art.height == 0 {
+        return;
+    }
 
     let mut out = stdout();
 
-    for ay in 0..ascii_h {
-        for ax in 0..ascii_w {
-            let p = resized_img.get_pixel(ax, ay);
-            let (r, g, b) = (p[0], p[1], p[2]);
+    for ay in 0..art.height {
+        for ax in 0..art.width {
+            let idx = (ay * art.width + ax) as usize;
+            let c = &art.characters[idx];
 
-            let c = pixel_to_char(r, g, b);
-
-            queue!(out, SetForegroundColor(Color::Rgb { r, g, b }), Print(c)).unwrap();
+            queue!(
+                out,
+                SetForegroundColor(Color::Rgb {
+                    r: c.r,
+                    g: c.g,
+                    b: c.b
+                }),
+                Print(c.character)
+            )
+            .unwrap();
         }
 
         queue!(out, ResetColor, Print("\n")).unwrap();
